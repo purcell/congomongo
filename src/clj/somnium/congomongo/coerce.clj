@@ -3,9 +3,8 @@
         [clojure.contrib.json read write]
         [clojure.contrib.def :only [defvar]]
         [clojure.contrib.core :only [seqable?]])
-  (:import [somnium.congomongo ClojureDBObject]
-           [clojure.lang IPersistentMap]
-           [com.mongodb DBObject]
+  (:import [clojure.lang IPersistentMap IPersistentVector Keyword RT]
+           [com.mongodb DBObject BasicDBObject]
            [com.mongodb.gridfs GridFSFile]
            [com.mongodb.util JSON]))
 
@@ -13,24 +12,53 @@
   "Set this to false to prevent ClojureDBObject from setting string keys to keywords")
 
 
-(defn- dbobject->clojure
-  "Not every DBObject returned from Mongo is a ClojureDBObject,
-   since we can't setObjectClass on the collections used to back GridFS;
-   those collections have GridFSDBFile as their object class.
+(declare obj->clojure)
 
-   This function uses ClojureDBObject to marshal such DBObjects
-   into Clojure structures; in practice, this applies only to GridFSFile
-   and its subclasses."
+(defn- assocs->clojure [kvs keywordize]
+  ;; Taking the keywordize test out of the fn reduces derefs
+  ;; dramatically, which was the main barrier to matching pure-Java
+  ;; performance for this marshalling
+  (reduce (if keywordize
+            (fn [m [#^String k v]] (assoc m (keyword k) (obj->clojure v true)))
+            (fn [m [#^String k v]] (assoc m k           (obj->clojure v false))))
+          {} kvs))
+
+(defn- map->clojure [#^Map m keywordize]
+  (assocs->clojure (.entrySet m) keywordize))
+
+(defn- list->clojure [#^List l keywordize]
+  (vec (map #(obj->clojure % keywordize) l)))
+
+(defn- obj->clojure [o keywordize]
+  (cond
+   (.isInstance Map o)  (map->clojure o keywordize)
+   (.isInstance List o) (list->clojure o keywordize)
+   true                 o))
+
+(defn- dbobject->clojure
   [#^DBObject f keywordize]
-  (ClojureDBObject/toClojureMap
-   (try (.toMap f)
-        ;; DBObject provides .toMap, but the implementation in
-        ;; subclass GridFSFile unhelpfully throws
-        ;; UnsupportedOperationException
-        (catch UnsupportedOperationException e
-          (let [keys (.keySet f)]
-            (zipmap keys (map #(.get f %) keys)))))
-   keywordize))
+  ;; DBObject provides .toMap, but the implementation in
+  ;; subclass GridFSFile unhelpfully throws
+  ;; UnsupportedOperationException
+  (assocs->clojure (for [k (.keySet f)] [k (.get f k)]) keywordize))
+
+
+(declare clojure-obj->mongo-obj)
+
+(defn- clojure-map->mongo-map [#^IPersistentMap m]
+  (let [dbo (BasicDBObject.)]
+    (doseq [[k v] m]
+      (.put dbo
+            (if (keyword? k) (.getName #^Keyword k) k)
+            (clojure-obj->mongo-obj v)))
+    dbo))
+
+(defn- clojure-obj->mongo-obj [o]
+  (cond
+   (keyword? o) (.getName #^Keyword o)
+   (map? o) (clojure-map->mongo-map #^IPersistentMap o)
+   (.isInstance List o) (map clojure-obj->mongo-obj #^List o)
+   true o))
 
 
 (defunk coerce
@@ -45,12 +73,11 @@
       obj
       (let [fun
             (condp = from-to
-              [:clojure :mongo  ] #(ClojureDBObject. #^IPersistentMap %)
-              [:clojure :json   ] #(json-str %)
-              [:mongo   :clojure] #(.toClojure #^ClojureDBObject %
-                                               #^Boolean/TYPE *keywordize*)
-              [:mongo   :json   ] #(.toString #^ClojureDBObject %)
-              [:gridfs  :clojure] #(dbobject->map #^GridFSFile %)
+              [:clojure :mongo  ] clojure-map->mongo-map
+              [:clojure :json   ] json-str
+              [:mongo   :clojure] #(dbobject->clojure #^DBObject % #^Boolean/TYPE *keywordize*)
+              [:mongo   :json   ] #(.toString #^DBObject %)
+              [:gridfs  :clojure] #(dbobject->clojure #^GridFSFile % *keywordize*)
               [:json    :clojure] #(binding [*json-keyword-keys* *keywordize*] (read-json %))
               [:json    :mongo  ] #(JSON/parse %)
               :else               (throw (RuntimeException.
@@ -62,5 +89,5 @@
 (defn coerce-fields
   "only used for creating argument object for :only"
   [fields]
-  (ClojureDBObject. #^IPersistentMap (zipmap fields (repeat 1))))
+  (clojure-map->mongo-map #^IPersistentMap (zipmap fields (repeat 1))))
 

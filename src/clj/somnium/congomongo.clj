@@ -28,8 +28,7 @@
             [clojure.contrib.json read write])
   (:import  [com.mongodb Mongo DB DBCollection DBObject]
             [com.mongodb.util JSON]
-            [com.mongodb.gridfs GridFS]
-            [somnium.congomongo ClojureDBObject]))
+            [com.mongodb.gridfs GridFS]))
 
 (defunk mongo!
   "Creates a Mongo object and sets the default database.
@@ -52,9 +51,8 @@
 (definline get-coll
   "Returns a DBCollection object"
   [collection]
-  `(doto (.getCollection #^DB (:db @*mongo-config*)
-                         #^String (named ~collection))
-     (.setObjectClass ClojureDBObject)))
+  `(.getCollection #^DB (:db @*mongo-config*)
+                   #^String (named ~collection)))
 
 (defunk fetch 
   "Fetches objects from a collection.

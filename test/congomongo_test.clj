@@ -6,8 +6,7 @@
         somnium.congomongo.coerce
         clojure.contrib.json.read
         clojure.contrib.json.write
-        clojure.contrib.pprint)
-  (:import somnium.congomongo.ClojureDBObject))
+        clojure.contrib.pprint))
 
 (deftest coercions
   (let [forms   [:clojure :mongo :json]
