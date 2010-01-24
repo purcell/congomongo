@@ -3,7 +3,8 @@
         [clojure.contrib.json read write]
         [clojure.contrib.def :only [defvar]]
         [clojure.contrib.core :only [seqable?]])
-  (:import [clojure.lang IPersistentMap IPersistentVector Keyword RT]
+  (:import [clojure.lang IPersistentMap IPersistentVector Keyword]
+           [java.util Map List]
            [com.mongodb DBObject BasicDBObject]
            [com.mongodb.gridfs GridFSFile]
            [com.mongodb.util JSON]))
