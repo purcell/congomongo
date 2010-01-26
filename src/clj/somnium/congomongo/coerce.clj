@@ -13,53 +13,69 @@
   "Set this to false to prevent ClojureDBObject from setting string keys to keywords")
 
 
-(declare obj->clojure)
+;;; Converting data from mongo into Clojure data objects
+
+(defn- mongo->clojure-dispatch [o keywordize]
+  (class o))
+
+(defmulti mongo->clojure mongo->clojure-dispatch)
 
 (defn- assocs->clojure [kvs keywordize]
   ;; Taking the keywordize test out of the fn reduces derefs
   ;; dramatically, which was the main barrier to matching pure-Java
   ;; performance for this marshalling
   (reduce (if keywordize
-            (fn [m [#^String k v]] (assoc m (keyword k) (obj->clojure v true)))
-            (fn [m [#^String k v]] (assoc m k           (obj->clojure v false))))
+            (fn [m [#^String k v]] (assoc m (keyword k) (mongo->clojure v true)))
+            (fn [m [#^String k v]] (assoc m k           (mongo->clojure v false))))
           {} kvs))
 
-(defn- map->clojure [#^Map m keywordize]
+(defmethod mongo->clojure Map
+  [#^Map m keywordize]
   (assocs->clojure (.entrySet m) keywordize))
 
-(defn- list->clojure [#^List l keywordize]
-  (vec (map #(obj->clojure % keywordize) l)))
+(defmethod mongo->clojure List
+  [#^List l keywordize]
+  (vec (map #(mongo->clojure % keywordize) l)))
 
-(defn- obj->clojure [o keywordize]
-  (cond
-   (.isInstance Map o)  (map->clojure o keywordize)
-   (.isInstance List o) (list->clojure o keywordize)
-   true                 o))
+(defmethod mongo->clojure :default
+  [o keywordize]
+  o)
 
-(defn- dbobject->clojure
+(defmethod mongo->clojure DBObject
   [#^DBObject f keywordize]
   ;; DBObject provides .toMap, but the implementation in
   ;; subclass GridFSFile unhelpfully throws
   ;; UnsupportedOperationException
   (assocs->clojure (for [k (.keySet f)] [k (.get f k)]) keywordize))
 
+(prefer-method mongo->clojure DBObject Map)
 
-(declare clojure-obj->mongo-obj)
 
-(defn- clojure-map->mongo-map [#^IPersistentMap m]
+;;; Converting data from Clojure into data objects suitable for Mongo
+
+(defmulti clojure->mongo class)
+
+(defmethod clojure->mongo IPersistentMap
+  [#^IPersistentMap m]
   (let [dbo (BasicDBObject.)]
     (doseq [[k v] m]
       (.put dbo
             (if (keyword? k) (.getName #^Keyword k) k)
-            (clojure-obj->mongo-obj v)))
+            (clojure->mongo v)))
     dbo))
 
-(defn- clojure-obj->mongo-obj [o]
-  (cond
-   (keyword? o) (.getName #^Keyword o)
-   (map? o) (clojure-map->mongo-map #^IPersistentMap o)
-   (.isInstance List o) (map clojure-obj->mongo-obj #^List o)
-   true o))
+(defmethod clojure->mongo Keyword
+  [#^Keyword o]
+  (.getName o))
+
+(defmethod clojure->mongo List
+  [#^List o]
+  (map clojure->mongo o))
+
+(defmethod clojure->mongo :default
+  [o]
+  o)
+
 
 
 (defunk coerce
@@ -74,11 +90,11 @@
       obj
       (let [fun
             (condp = from-to
-              [:clojure :mongo  ] clojure-map->mongo-map
+              [:clojure :mongo  ] clojure->mongo
               [:clojure :json   ] json-str
-              [:mongo   :clojure] #(dbobject->clojure #^DBObject % #^Boolean/TYPE *keywordize*)
+              [:mongo   :clojure] #(mongo->clojure #^DBObject % #^Boolean/TYPE *keywordize*)
               [:mongo   :json   ] #(.toString #^DBObject %)
-              [:gridfs  :clojure] #(dbobject->clojure #^GridFSFile % *keywordize*)
+              [:gridfs  :clojure] #(mongo->clojure #^GridFSFile % *keywordize*)
               [:json    :clojure] #(binding [*json-keyword-keys* *keywordize*] (read-json %))
               [:json    :mongo  ] #(JSON/parse %)
               :else               (throw (RuntimeException.
